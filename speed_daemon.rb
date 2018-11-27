@@ -1,4 +1,5 @@
 require 'fileutils'
+require 'timeout'
 
 class Daemon
 
@@ -14,6 +15,13 @@ class Daemon
 		#expand paths for logfile, pidfile
 		options[:logfile] = File.expand_path(options[:logfile])
 		options[:pidfile] = File.expand_path(options[:pidfile])
+
+		#set process name
+		Process.setproctitle('speed_daemon')
+
+		#change user from root to speed_daemon
+		new_uid = Process::UID.from_name("speed_daemon")
+		Process::UID.change_privilege(new_uid)
 	end
 
 	def run!
@@ -35,17 +43,32 @@ class Daemon
 
 			log "Beginning connection test..."
 
-			#work
+			error_check
+			begin
+				Timeout::timeout(options[:timeout]) do
+					full_test(results) if options[:full_test] == true
+					quick_test(results) if options[:full_test] == false
+				end
+			rescue Timeout::Error
+				#if test times out, log all speeds as 0
+				log "Connection test timed out..."
+				results[:ping] = 0.00
+				results[:down] = 0.00
+				results[:up] = 0.00
+				results[:date] = Time.now.strftime("%Y-%m-%d")
+				results[:time] = Time.now.strftime("%H:%M:%S")
+			end
+			insert(results)
 
 			log "Connection test complete."
 
 			sleep(options[:interval])
 		end
-		STDOUT.puts "Stopping Speed Daemon..."
+		STDOUT.puts "Speed Daemon stopped..."
 	end
 
 	def log(msg)
-		puts "[#{Process.pid}] [#{Time.now}] #{msg}"
+		STDERR.puts "[#{Process.pid}] [#{Time.now}] #{msg}"
 	end
 
 	def pid_status(pidfile)
@@ -63,14 +86,18 @@ class Daemon
 	def check_pid
 		case pid_status(options[:pidfile])
 		when :running, :not_owned
-			puts "An instance is already running. Check #{options[:pidfile]}"
-			exit(1)
+			abort("An instance is already running. Check #{options[:pidfile]}")
 		when :dead
 			File.delete(options[:pidfile])
 		end
 	end
 
 	def write_pid
+		#check for directory
+		if !File.directory?(File.dirname(options[:pidfile]))
+			FileUtils.mkdir_p(File.dirname(options[:pidfile], :mode => 0755))
+			FileUtils.chown 'speed_daemon', 'root', File.dirname(options[:pidfile])
+		end
 		begin
 			File.open(options[:pidfile], ::File::CREAT | ::File::EXCL | ::File::WRONLY) { |f|
 				f.write("#{Process.pid}")
@@ -81,6 +108,12 @@ class Daemon
 		rescue Errno::EEXIST
 			check_pid
 			retry
+		rescue Errno::EACCES => e
+			puts "Unable to create PID file, exiting..."
+			abort("#{e.class.name} -- #{e.message}")
+		rescue Errno::ENOENT => e
+			puts "Unable to create PID file, exiting..."
+			abort("#{e.class.name} -- #{e.message}")
 		end
 	end
 
@@ -97,21 +130,145 @@ class Daemon
 		Dir.chdir "/"
 	end
 
+	#redirect output to logfile, if logfile doesn't exist make it, if can't make it, error and exit
 	def redirect_output
+		#check for/create log directory
 		if !File.directory?(File.dirname(options[:logfile]))
 			FileUtils.mkdir_p(File.dirname(options[:logfile], :mode => 0755))
+			FileUtils.chown 'speed_daemon', 'root', File.dirname(options[:logfile])
 		end
+		#check for/create log file
 		if !File.exists?(options[:logfile])
 			FileUtils.touch options[:logfile]
+			FileUtils.chown 'speed_daemon', 'root', options[:logfile]
 			File.chmod(0644, options[:logfile])
 		end
-		$stderr.reopen(options[:logfile], 'a')
-		$stderr.sync = true
+		#check if log file is writable
+		if !File.writable?(options[:logfile])
+			abort("Logfile does not appear to be writable, exiting...")
+		else
+			#file exists and is writable, redirect stderr
+			$stderr.reopen(options[:logfile], 'a')
+			$stderr.sync = true
+		end
+	#raise error if logfile cannot be created
+	rescue Errno::EACCES => e
+		puts "Unable to create logfile, exiting..."
+		abort("#{e.class.name} -- #{e.message}")
 	end
 
-	#error_check
-	#speed_test
-	#import
-	
+	def error_check
+		#double check that mysql db and tbl were provided
+		if (options[:mysql_db].empty? or options[:mysql_tbl].empty?)
+			abort("MySQL database and table names are required, exiting...")
+		end
 
+		#test if mysql is running
+		`systemctl status mysql > /dev/null`		#systemctl seems to have errors checking the status (sometimes) if this isn't run first...
+		`systemctl is-active --quiet mysql`
+		if $?.exitstatus != 0
+			abort("MySQL server does not appear to be running, exiting...")
+		end
+
+		#test if mysql database and table exist
+		table_check = `mysql --execute="SELECT IF( EXISTS( SELECT * FROM information_schema.tables WHERE table_schema = \\\"#{options[:mysql_db]}\\\" AND table_name = \\\"#{options[:mysql_tbl]}\\\"), 1, 0);"`
+		table_check = table_check.split(')')		#separate echoed query from sql server from query result (1 == table exists)
+		if table_check[2].to_i != 1
+			abort("Could not find \"#{options[:mysql_db]}.#{options[:mysql_tbl]}\" in MySQL server, exiting...")
+		else
+			#database and table exist, check for needed columns (id, date, time, ping, download, upload)
+			column_check = `mysql --execute="SELECT column_name FROM information_schema.columns WHERE table_schema = \\\"#{options[:mysql_db]}\\\" AND table_name = \\\"#{options[:mysql_tbl]}\\\";"`
+			column_check = Array(column_check.split(' '))
+
+			#array to check against
+			mysql_col = ["id", "date", "time", "ping", "download", "upload"]
+
+			if !(mysql_col - column_check).empty?
+				abort("\"#{options[:mysql_db]}.#{options[:mysql_tbl]}\" does not appear to contain the correct columns, exiting...")
+			end
+		end
+
+		#check for speedtest-cli
+		`which speedtest-cli`
+		if $?.exitstatus != 0
+			abort("Speedtest-cli not found, exiting...")
+		end
+	end
+
+	def quick_test(results)
+		#test command -- selects ping | download | upload -- only use "--server" option if one was provided
+		if options[:server] != 0	#server was specified
+			test = `speedtest --server #{options[:server]} --csv --csv-delimiter ";" | cut -d ";" -f 6,7,8`
+		else						#no server specified
+			test = `speedtest --csv --csv-delimiter ";" | cut -d ";" -f 6,7,8`
+		end
+
+		#separate results to assign to results[]
+		test = test.split(';')
+
+		#DEBUG
+		test = ["9.2456", "5678024", "168406"]
+
+		#typecast results and write to hash table
+		results[:ping] = test[0].to_f.round(2)					#round to two decimal places
+		results[:down] = (test[1].to_f / 1000000).round(2)		#bps to Mbps and round to two decimal places
+		results[:up] = (test[2].to_f / 1000000).round(2)		#bps to Mbps and round to two decimal places
+
+		#get date and time, write to hash table
+		#date -- YYYY-MM-DD
+		results[:date] = Time.now.strftime("%Y-%m-%d")
+		#time -- HH:MM:SS
+		results[:time] = Time.now.strftime("%H:%M:%S")
+	end
+
+	#if you are reading this, please help... there has to be a way to do this that doesn't make me gag...
+	def full_test(results)
+		if options[:server] != 0
+			test = "speedtest --server #{options[:server]} --csv --csv-delimiter \";\" | cut -d \";\" -f 6,7,8"
+		else
+			test = 'speedtest --csv --csv-delimiter ";" | cut -d ";" -f 6,7,8'
+		end
+
+		#create variable to hold results of each test
+		test0 = ""
+		test1 = ""
+		test2 = ""
+
+		#do three tests and average the results
+		counter = 0
+		while counter < 3
+			speed_results = `#{test}`
+
+			#gross...
+			if counter == 0
+				test0 = "#{speed_results}".split(";")
+			elsif counter == 1
+				test1 = "#{speed_results}".split(";")
+			elsif counter == 2
+				test2 = "#{speed_results}".split(";")
+			end
+
+			#average results and write to hash table
+			results[:ping] = ((test0[0].to_f + test1[0].to_f + test2[0].to_f) / 3).round(2)					#average results of three tests, round to two decimal places
+			results[:down] = (((test0[1].to_f + test1[1].to_f + test2[1].to_f) / 3) / 1000000).round(2)		#average results of three tests, bps to Mbps, round to two decimal places
+			results[:up] = (((test0[2].to_f + test1[2].to_f + test2[2].to_f) / 3) / 1000000).round(2)		#average results of three tests, bps to Mbps, round to two decimal places
+		end
+
+		#get date and time, write to hash table
+		#date -- YYY-MM-DD
+		results[:date] = Time.now.strftime("%Y-%M-%D")
+		#time -- HH:MM:SS
+		results[:time] = Time.now.strftime("%H:%M:%S")
+	end
+
+	#insert results into database
+	def insert(results)
+		`mysql --execute="INSERT INTO #{options[:mysql_db]}.#{options[:mysql_tbl]} (date,time,ping,download,upload) VALUES (\\\"#{results[:date]}\\\",\\\"#{results[:time]}\\\",#{results[:ping]},#{results[:down]},#{results[:up]});"`	
+
+		#log, print to stdout, and exit if not added to database correctly
+		if $?.exitstatus != 0
+			log "Error adding results to #{options[:mysql_db]}.#{options[:mysql_tbl]}"
+			abort("Error adding results to #{options[:mysql_db]}.#{options[:mysql_tbl]}, exiting...")
+		end
+	end
 end
