@@ -158,12 +158,15 @@ class Daemon
 	end
 
 	def error_check
+		log "Beginning error checks..."
 		#double check that mysql db and tbl were provided
+		log "	[-] Checking command line options."
 		if (options[:mysql_db].empty? or options[:mysql_tbl].empty?)
 			abort("MySQL database and table names are required, exiting...")
 		end
 
 		#test if mysql is running
+		log "	[-] Checking for running MySQL server."
 		`systemctl status mysql > /dev/null`		#systemctl seems to have errors checking the status (sometimes) if this isn't run first...
 		`systemctl is-active --quiet mysql`
 		if $?.exitstatus != 0
@@ -171,11 +174,13 @@ class Daemon
 		end
 
 		#test if mysql database and table exist
+		log "	[-] Checking for MySQL table."
 		table_check = `mysql --execute="SELECT IF( EXISTS( SELECT * FROM information_schema.tables WHERE table_schema = \\\"#{options[:mysql_db]}\\\" AND table_name = \\\"#{options[:mysql_tbl]}\\\"), 1, 0);"`
 		table_check = table_check.split(')')		#separate echoed query from sql server from query result (1 == table exists)
 		if table_check[2].to_i != 1
 			abort("Could not find \"#{options[:mysql_db]}.#{options[:mysql_tbl]}\" in MySQL server, exiting...")
 		else
+			log "	[-] Checking for MySQL columns."
 			#database and table exist, check for needed columns (id, date, time, ping, download, upload)
 			column_check = `mysql --execute="SELECT column_name FROM information_schema.columns WHERE table_schema = \\\"#{options[:mysql_db]}\\\" AND table_name = \\\"#{options[:mysql_tbl]}\\\";"`
 			column_check = Array(column_check.split(' '))
@@ -189,25 +194,28 @@ class Daemon
 		end
 
 		#check for speedtest-cli
+		log "	[-] Checking for speedtest-cli."
 		`which speedtest-cli`
 		if $?.exitstatus != 0
 			abort("Speedtest-cli not found, exiting...")
 		end
+		log "Error checks complete."
 	end
 
 	def quick_test(results)
+		log "Beginning quick connection test..."
 		#test command -- selects ping | download | upload -- only use "--server" option if one was provided
 		if options[:server] != 0	#server was specified
 			test = `speedtest --server #{options[:server]} --csv --csv-delimiter ";" | cut -d ";" -f 6,7,8`
 		else						#no server specified
 			test = `speedtest --csv --csv-delimiter ";" | cut -d ";" -f 6,7,8`
 		end
-
+		log "	[-] Scan complete, adding results to hash table."
 		#separate results to assign to results[]
 		test = test.split(';')
 
-		#DEBUG
-		test = ["9.2456", "5678024", "168406"]
+#		#DEBUG
+#		test = ["9.2456", "5678024", "168406"]
 
 		#typecast results and write to hash table
 		results[:ping] = test[0].to_f.round(2)					#round to two decimal places
@@ -219,10 +227,12 @@ class Daemon
 		results[:date] = Time.now.strftime("%Y-%m-%d")
 		#time -- HH:MM:SS
 		results[:time] = Time.now.strftime("%H:%M:%S")
+		log "Quick connection test complete."
 	end
 
 	#if you are reading this, please help... there has to be a way to do this that doesn't make me gag...
 	def full_test(results)
+		log "Beginning full connection test..."
 		if options[:server] != 0
 			test = "speedtest --server #{options[:server]} --csv --csv-delimiter \";\" | cut -d \";\" -f 6,7,8"
 		else
@@ -237,6 +247,7 @@ class Daemon
 		#do three tests and average the results
 		counter = 0
 		while counter < 3
+			log "	[-] Conducting scan: #{(counter + 1)}"
 			speed_results = `#{test}`
 
 			#gross...
@@ -254,15 +265,18 @@ class Daemon
 			results[:up] = (((test0[2].to_f + test1[2].to_f + test2[2].to_f) / 3) / 1000000).round(2)		#average results of three tests, bps to Mbps, round to two decimal places
 		end
 
+		log "	[-] Scans complete, adding results to hash table."
 		#get date and time, write to hash table
 		#date -- YYY-MM-DD
 		results[:date] = Time.now.strftime("%Y-%M-%D")
 		#time -- HH:MM:SS
 		results[:time] = Time.now.strftime("%H:%M:%S")
+		log "Full connection test complete."
 	end
 
 	#insert results into database
 	def insert(results)
+		log "Adding results to MySQL database..."
 		`mysql --execute="INSERT INTO #{options[:mysql_db]}.#{options[:mysql_tbl]} (date,time,ping,download,upload) VALUES (\\\"#{results[:date]}\\\",\\\"#{results[:time]}\\\",#{results[:ping]},#{results[:down]},#{results[:up]});"`	
 
 		#log, print to stdout, and exit if not added to database correctly
@@ -270,5 +284,6 @@ class Daemon
 			log "Error adding results to #{options[:mysql_db]}.#{options[:mysql_tbl]}"
 			abort("Error adding results to #{options[:mysql_db]}.#{options[:mysql_tbl]}, exiting...")
 		end
+		log "Results added to MySQL database."
 	end
 end
