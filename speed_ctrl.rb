@@ -10,6 +10,8 @@ options = {
 	:timeout => 300,		#timout is 5 minutes by default	
 	:server => 0,
 	:full_test => false,
+	:dry_run => false,
+	:quit => false,
 	:logfile => "/var/log/speed_daemon/speed_daemon.log",
 	:pidfile => "/var/run/speed_daemon/speed_daemon.pid"
 }
@@ -18,11 +20,11 @@ options = {
 ARGV << '-h' if ARGV.empty?
 
 parser = OptionParser.new do |opts|
-	opts.version = 'v1.0'
+	opts.version = 'v1.1'
 	opts.release = 'r1'
 	opts.set_program_name('Speed Daemon')
 	opts.banner = "Usage: #{$0} [options]"
-	opts.separator "	Ex. #{$0} -d db_name -t tbl_name -s 6421 --interval 15 --timeout 10 -I."
+	opts.separator "	Ex. #{$0} -d db_name -t tbl_name -s 6421 --interval 15 --timeout 10 -I../lib"
 	opts.separator ""
 
 	opts.separator "Required Options:"
@@ -31,6 +33,10 @@ parser = OptionParser.new do |opts|
 	end
 	opts.on('-t', '--table [NAME]', ': Name of table in MySQL database to use for storing results') do |op|
 		options[:mysql_tbl] = op
+	end
+	opts.on('-I', '--include [DIR]', ': Additional Ruby $LOAD_PATH directory',
+		'	(Relative path to the directory containing speed_daemon.rb)') do |op|
+		$LOAD_PATH.unshift(*op.split(":").map{ |v| File.expand_path(v)})
 	end
 	opts.separator ""
 
@@ -47,26 +53,21 @@ parser = OptionParser.new do |opts|
 		'	(List available at https://speedtestserver.com/)') do |op|
 		options[:server] = op
 	end
-	opts.on('-f', '--full', ': Conduct three tests and log the average for every iteration',
+	opts.on('-f', '--full-test', ': Conduct three tests and log the average for every iteration',
 		'	(Default: Run one test and log the results)') do
 		options[:full_test] = true
+	end
+	opts.on('--dry-run', ': Test functionality of script without conducting a network test',
+		'	(Runs daemon using pre-programmed values)') do
+		options[:dry_run] = true
+	end
+	opts.on('--quit', ': Gracefully shutdown Speed Daemon, if running',
+		'	(\'--pidfile\' option required if not using default path)') do
+		options[:quit] = true
 	end
 	opts.separator ""
 
 	opts.separator "Other Options:"
-	opts.on('--quit [PID FILE PATH/NAME] || [PID]', ': Gracefully shutdown Speed Daemon, if running (REQUIRES PIDFILE OR PID)') do |op|
-		if File.exists?(op)
-			pid = File.read(op).to_i
-			Process.kill(3,pid)
-		else
-			puts "Unable to locate PID file. Please kill the process manually."
-		end
-		exit(0)
-	end
-	opts.on('-I', '--include [DIR]', ': Additional Ruby $LOAD_PATH directory, if required',
-		'	(This will be the directory containing speed_daemon.rb)') do |op|
-		$LOAD_PATH.unshift(*op.split(":").map{ |v| File.expand_path(v)})
-	end
 	opts.on('--logfile [PATH/NAME]', ': File path and name for log file',
 		'	(Default: /var/log/speed_daemon/speed_daemon.log)') do |op|
 		options[:logfile] = op
@@ -90,15 +91,15 @@ parser.parse!
 def opts_check(options)
 	#check that required options were provided
 	if options[:mysql_tbl].empty?
-		abort("MySQL table is a required option. Please check the command and try again.")
+		abort("[!] MySQL table is a required option. Please check the command and try again.")
 	end
 	if options[:mysql_db].empty?
-		abort("MySQL database is a required option. Please check the command and try again.")
+		abort("[!] MySQL database is a required option. Please check the command and try again.")
 	end
 
 	#check for root permissions
 	if Process.uid != 0
-		abort("This script must be run as root. Please elevate privileges and try again.")
+		abort("[!] This script must be run as root. Please elevate privileges and try again.")
 	end
 
 	#check directories (log/pid), make if they don't exist
@@ -110,11 +111,32 @@ def opts_check(options)
 		FileUtils.mkdir_p(File.dirname(options[:logfile]), :mode => 0755)
 		FileUtils.chown 'speed_daemon', 'root', File.dirname(options[:logfile])
 	end
+
+	#only allow one test type (quick, full, dry)
+	if options[:full_test] and options[:dry_run]
+		abort("[!] Only one test type can be specified at a time. Please check options and try again.")
+	end
 end
 
+def quit(pidfile)
+	if File.exists?(pidfile)
+		pid = File.read(pidfile).to_i
+		Process.kill(3,pid)
+		puts "[*] :QUIT signal sent. Daemon will exit on next iteration."
+	else
+		abort("[!] Unable to locate PID file. Please kill the process manually.")
+	end
+end
 
 #run daemon
 require 'speed_daemon'
 
 opts_check(options)
-Daemon.new(options).run!
+
+#if '--quit' option specified, stop, otherwise start
+if quit(options[:quit])
+	quit(options[:pidfile])
+else
+	Daemon.new(options).run!
+end
+exit(0)
