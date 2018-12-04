@@ -119,7 +119,7 @@ def opts_check(options)
 end
 
 def quit(pidfile)
-	if File.exists?(pidfile)
+	if File.exist?(pidfile)
 		pid = File.read(pidfile).to_i
 		Process.kill(3,pid)
 		puts "[*] :QUIT signal sent. Daemon will exit on next iteration."
@@ -134,7 +134,7 @@ require 'speed_daemon'
 opts_check(options)
 
 #if '--quit' option specified, stop, otherwise start
-if quit(options[:quit])
+if options[:quit]
 	quit(options[:pidfile])
 else
 	Daemon.new(options).run!
