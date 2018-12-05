@@ -24,7 +24,7 @@ parser = OptionParser.new do |opts|
 	opts.release = 'r1'
 	opts.set_program_name('Speed Daemon')
 	opts.banner = "Usage: #{$0} [options]"
-	opts.separator "	Ex. #{$0} -d db_name -t tbl_name -s 6421 --interval 15 --timeout 10 -I../lib"
+	opts.separator "	Ex. #{$0} -d db_name -t tbl_name -s 6421 --interval 15 --timeout 10 -I ../lib"
 	opts.separator ""
 
 	opts.separator "Required Options:"
@@ -33,10 +33,6 @@ parser = OptionParser.new do |opts|
 	end
 	opts.on('-t', '--table [NAME]', ': Name of table in MySQL database to use for storing results') do |op|
 		options[:mysql_tbl] = op
-	end
-	opts.on('-I', '--include [DIR]', ': Additional Ruby $LOAD_PATH directory',
-		'	(Relative path to the directory containing speed_daemon.rb)') do |op|
-		$LOAD_PATH.unshift(*op.split(":").map{ |v| File.expand_path(v)})
 	end
 	opts.separator ""
 
@@ -68,6 +64,10 @@ parser = OptionParser.new do |opts|
 	opts.separator ""
 
 	opts.separator "Other Options:"
+	opts.on('-I', '--include [DIR]', ': Additional Ruby $LOAD_PATH directory',
+		'	(Relative path to the directory containing speed_daemon.rb, if not this one)') do |op|
+		$LOAD_PATH.unshift(*op.split(":").map{ |v| File.expand_path(v)})
+	end
 	opts.on('--logfile [PATH/NAME]', ': File path and name for log file',
 		'	(Default: /var/log/speed_daemon/speed_daemon.log)') do |op|
 		options[:logfile] = op
@@ -97,11 +97,6 @@ def opts_check(options)
 		abort("[!] MySQL database is a required option. Please check the command and try again.")
 	end
 
-	#check for root permissions
-	if Process.uid != 0
-		abort("[!] This script must be run as root. Please elevate privileges and try again.")
-	end
-
 	#check directories (log/pid), make if they don't exist
 	if !File.directory?(File.dirname(options[:pidfile]))
 		FileUtils.mkdir_p(File.dirname(options[:pidfile]), :mode => 0755)
@@ -119,24 +114,47 @@ def opts_check(options)
 end
 
 def quit(pidfile)
-	if File.exist?(pidfile)
+	if File.exists?(pidfile)
 		pid = File.read(pidfile).to_i
 		Process.kill(3,pid)
 		puts "[*] :QUIT signal sent. Daemon will exit on next iteration."
+		exit(0)
 	else
 		abort("[!] Unable to locate PID file. Please kill the process manually.")
 	end
 end
 
-#run daemon
-require 'speed_daemon'
-
-opts_check(options)
+#MAIN
+#make sure script is being run as root
+if Process.uid != 0
+	abort("[!] This script must be run as root. Please elevate privileges and try again.")
+end
 
 #if '--quit' option specified, stop, otherwise start
 if options[:quit]
 	quit(options[:pidfile])
 else
-	Daemon.new(options).run!
+	#check script options
+	opts_check(options)
+
+	#load daemon code and run daemon
+	begin
+		retries ||= 0							#make retries counter
+		require 'speed_daemon'					#attempt to load daemon code
+	rescue LoadError => e
+		#only retry once
+		if retries == 0
+			retries += 1
+
+			#file not in $LOAD_PATH, load directory of speed_ctrl (in case they are in the same directory) and retry once
+			$LOAD_PATH.unshift(File.expand_path(File.dirname(__FILE__))) unless $LOAD_PATH.include?(File.expand_path(File.dirname(__FILE__)))
+			retry
+		else
+			puts "[!] Unable to load 'speed_daemon.rb', please use '--include' option to specify directory."
+			abort("#{e.class.name} -- #{e.message}")
+		end
+	end
+	puts "done"
+#	Daemon.new(options).run!
 end
 exit(0)
