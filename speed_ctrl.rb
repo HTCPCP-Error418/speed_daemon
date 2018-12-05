@@ -154,7 +154,7 @@ else
 			abort("#{e.class.name} -- #{e.message}")
 		end
 	end
-	puts "done"
-#	Daemon.new(options).run!
+
+	Daemon.new(options).run!
 end
 exit(0)
