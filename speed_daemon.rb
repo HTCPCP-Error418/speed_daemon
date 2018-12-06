@@ -70,7 +70,6 @@ class Daemon
 
 			sleep(options[:interval])
 		end
-#		STDOUT.puts "Speed Daemon stopped..."		#This echoes in the terminal poorly (since the process is detached) -- put back in if it can look better
 	end
 
 	def log(msg)
