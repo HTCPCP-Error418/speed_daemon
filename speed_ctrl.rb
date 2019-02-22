@@ -141,23 +141,33 @@ end
 if options[:conf_file]
 	if File.exists?(options[:conf_path])
 		File.foreach(options[:conf_path]) do |line|
-			line = line.split("=")
+			line = line.chomp.split("=")
 			options[:mysql_db] = line[1] if line[0] == "DATABASE"
 			options[:mysql_tbl] = line[1] if line[0] == "TABLE"
 			options[:full_test] = line[1] if line[0] == "FULL_TEST"
 			if line[0] == "INTERVAL"
 				options[:interval] = line[1] if line[1] != "default"
+			end
 			if line[0] == "TIMEOUT"
 				options[:timeout] = line[1] if line[1] != "default"
+			end
 			if line[0] == "SERVER"
 				options[:server] = line[1] if line[1] != "default"
+			end
 			if line[0] == "LOG_FILE"
 				options[:logfile] = line[1] if line[1] != "default"
+			end
 			if line[0] == "PID_FILE"
 				options[:pidfile] = line[1] if line[1] != "default"
+			end
+		end
 	else
 		abort("[!] Unable to locate speed_daemon.conf. Please check path and try again.")
 	end
+
+#	puts options
+#	abort("END OF TEST")
+
 end
 
 #if '--quit' option specified, stop, otherwise start
