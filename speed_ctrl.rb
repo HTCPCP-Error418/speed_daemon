@@ -7,13 +7,15 @@ options = {
 	:mysql_tbl => "",
 	:mysql_db => "",
 	:interval => 600,		#default interval is 10 minutes
-	:timeout => 300,		#timout is 5 minutes by default	
+	:timeout => 300,		#timout is 5 minutes by default
 	:server => 0,
 	:full_test => false,
 	:dry_run => false,
 	:quit => false,
 	:logfile => "/var/log/speed_daemon/speed_daemon.log",
-	:pidfile => "/var/run/speed_daemon/speed_daemon.pid"
+	:pidfile => "/var/run/speed_daemon/speed_daemon.pid",
+	:conf_file => false,
+	:conf_path => ""
 }
 
 #force '--help' option if no options are provided
@@ -76,6 +78,10 @@ parser = OptionParser.new do |opts|
 		'	(Default: /var/run/speed_daemon/speed_daemon.pid)') do |op|
 		options[:pidfile] = op
 	end
+	opts.on('--conf_file [PATH/NAME]', ':	File path and name for .conf file (if used)') do |op|
+		options[:conf_file] = true
+		options[:conf_path] = op
+	end
 	opts.on('-h', '--help', ': Print this help dialogue and exit') do
 		puts opts
 		exit(0)
@@ -128,6 +134,30 @@ end
 #make sure script is being run as root
 if Process.uid != 0
 	abort("[!] This script must be run as root. Please elevate privileges and try again.")
+end
+
+#if '--conf_file' option specified, load options from config file
+# is there a better way to do this? One with less if statements?
+if options[:conf_file]
+	if File.exists?(options[:conf_path])
+		File.foreach(options[:conf_path]) do |line|
+			line = line.split("=")
+			options[:mysql_db] = line[1] if line[0] == "DATABASE"
+			options[:mysql_tbl] = line[1] if line[0] == "TABLE"
+			options[:full_test] = line[1] if line[0] == "FULL_TEST"
+			if line[0] == "INTERVAL"
+				options[:interval] = line[1] if line[1] != "default"
+			if line[0] == "TIMEOUT"
+				options[:timeout] = line[1] if line[1] != "default"
+			if line[0] == "SERVER"
+				options[:server] = line[1] if line[1] != "default"
+			if line[0] == "LOG_FILE"
+				options[:logfile] = line[1] if line[1] != "default"
+			if line[0] == "PID_FILE"
+				options[:pidfile] = line[1] if line[1] != "default"
+	else
+		abort("[!] Unable to locate speed_daemon.conf. Please check path and try again.")
+	end
 end
 
 #if '--quit' option specified, stop, otherwise start

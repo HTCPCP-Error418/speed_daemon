@@ -154,3 +154,13 @@ MariaDB [(none)]> GRANT INSERT,SELECT ON [db_name].[tbl_name] TO 'speed_daemon'@
 The system should now be configured. The '--dry-run' option can be used to test the script; however, it should
 be noted that this will insert pre-programmed values into the table, which should be deleted prior to beginning
 to collect data to ensure that the results are not skewed.
+
+## TODO
+* Update README
+	* "--include" option no longer required
+	* Added .service file
+	* Added .conf file
+		* When using as a service, must use .conf file (unless editing .service file)
+		* "--include" must be specified as part of the command, so it is not in conf file
+* Test script as a service
+* Test use of conf file

@@ -1,0 +1,11 @@
+[Unit]
+Description=Speed_Daemon - An internet connection monitoring daemon that logs results to a MySQL database
+Documentation=https://github.com/anonzak/speed_daemon
+Wants=mysql.service
+
+[Service]
+Type=forking
+ExecStart=/usr/local/bin/speed_ctrl.rb --conf_file /usr/local/bin/speed_daemon.conf
+
+[Install]
+WantedBy=multi-user.target
